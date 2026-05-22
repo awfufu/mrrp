@@ -1,12 +1,13 @@
 use crate::{
+    config::RuleTransformConfig,
     error::AppError,
     models::rule::RuleName,
-    services::filter::filter_rule_lines,
-    sources::github::GithubSource,
+    sources::chain::SourceChain,
 };
 
 pub struct RuleService {
-    github_source: GithubSource,
+    rule_transforms: Vec<RuleTransformConfig>,
+    source_chain: SourceChain,
 }
 
 pub struct RuleResult {
@@ -14,16 +15,18 @@ pub struct RuleResult {
 }
 
 impl RuleService {
-    pub fn new(github_source: GithubSource) -> Self {
-        Self { github_source }
+    pub fn new(rule_transforms: Vec<RuleTransformConfig>, source_chain: SourceChain) -> Self {
+        Self {
+            rule_transforms,
+            source_chain,
+        }
     }
 
     pub async fn get_rule(&self, path: &str) -> Result<RuleResult, AppError> {
-        let rule_name = RuleName::parse(path).ok_or(AppError::InvalidRuleName)?;
-        let body = self.github_source.fetch(&rule_name).await?;
+        let rule_name = RuleName::parse(path, &self.rule_transforms)
+            .ok_or(AppError::InvalidRuleName)?;
+        let body = self.source_chain.fetch(&rule_name).await?;
 
-        Ok(RuleResult {
-            body: filter_rule_lines(&body),
-        })
+        Ok(RuleResult { body })
     }
 }

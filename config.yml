@@ -1,0 +1,15 @@
+# server-ip: 0.0.0.0
+# server-port: 8044
+
+rule-transforms:
+  - pattern: "\\.list$"
+    replace: ""
+
+upstreams:
+  - type: url
+    template: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/{rule}/{rule}.list"
+    # remove-comments: true
+
+  - type: file
+    template: "./rules/{rule}.list"
+    # remove-comments: true
