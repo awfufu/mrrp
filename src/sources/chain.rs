@@ -1,16 +1,18 @@
 use crate::{
     cache::MemoryCache,
-    config::{Config, UpstreamConfig},
+    config::{Config, UpstreamConfig, UpstreamMode},
     error::AppError,
     models::rule::RuleName,
     services::filter::filter_rule_lines,
     sources::{RuleSource, filesystem::FileSource, github::UrlSource},
 };
+use futures::{stream::FuturesUnordered, StreamExt};
 use reqwest::{Client, Proxy, header::{HeaderMap, HeaderName, HeaderValue}};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 pub struct SourceChain {
-    sources: Vec<ConfiguredSource>,
+    sources: Vec<Arc<ConfiguredSource>>,
+    mode: UpstreamMode,
 }
 
 struct ConfiguredSource {
@@ -21,7 +23,7 @@ struct ConfiguredSource {
 
 impl SourceChain {
     pub fn from_config(config: &Config, client: Client) -> Result<Self, String> {
-        let mut sources: Vec<ConfiguredSource> = Vec::new();
+        let mut sources: Vec<Arc<ConfiguredSource>> = Vec::new();
 
         for upstream in config.upstreams() {
             match upstream {
@@ -33,7 +35,7 @@ impl SourceChain {
                     headers,
                     cache_ttl,
                 } => {
-                    sources.push(ConfiguredSource {
+                    sources.push(Arc::new(ConfiguredSource {
                         source: Box::new(UrlSource::new(
                             build_url_client(
                                 &client,
@@ -45,18 +47,18 @@ impl SourceChain {
                         )),
                         remove_comments: *remove_comments,
                         cache: MemoryCache::new(*cache_ttl),
-                    });
+                    }));
                 }
                 UpstreamConfig::File {
                     template,
                     remove_comments,
                     cache_ttl,
                 } => {
-                    sources.push(ConfiguredSource {
+                    sources.push(Arc::new(ConfiguredSource {
                         source: Box::new(FileSource::new(template.clone())),
                         remove_comments: *remove_comments,
                         cache: MemoryCache::new(*cache_ttl),
-                    });
+                    }));
                 }
             }
         }
@@ -65,29 +67,25 @@ impl SourceChain {
             return Err("config must define at least one upstream".to_owned());
         }
 
-        Ok(Self { sources })
+        Ok(Self {
+            sources,
+            mode: config.upstream_mode(),
+        })
     }
 
     pub async fn fetch(&self, rule_name: &RuleName) -> Result<String, AppError> {
+        match self.mode {
+            UpstreamMode::Race => self.fetch_race(rule_name).await,
+            UpstreamMode::Sequential => self.fetch_sequential(rule_name).await,
+        }
+    }
+
+    async fn fetch_sequential(&self, rule_name: &RuleName) -> Result<String, AppError> {
         let mut saw_unavailable = false;
 
         for source in &self.sources {
-            if let Some(content) = source.cache.get(rule_name.as_str()) {
-                return Ok(content);
-            }
-
-            match source.source.fetch(rule_name).await {
-                Ok(content) => {
-                    let content = if source.remove_comments {
-                        filter_rule_lines(&content)
-                    } else {
-                        content
-                    };
-
-                    source.cache.set(rule_name.as_str().to_owned(), content.clone());
-
-                    return Ok(content);
-                }
+            match source.fetch(rule_name).await {
+                Ok(content) => return Ok(content),
                 Err(AppError::RuleNotFound) => continue,
                 Err(AppError::SourceUnavailable) => saw_unavailable = true,
                 Err(AppError::InvalidRuleName) => return Err(AppError::InvalidRuleName),
@@ -98,6 +96,63 @@ impl SourceChain {
             Err(AppError::SourceUnavailable)
         } else {
             Err(AppError::RuleNotFound)
+        }
+    }
+
+    async fn fetch_race(&self, rule_name: &RuleName) -> Result<String, AppError> {
+        let mut tasks = FuturesUnordered::new();
+
+        for source in &self.sources {
+            let source = Arc::clone(source);
+            let rule_name = rule_name.as_str().to_owned();
+
+            tasks.push(async move { source.fetch_by_key(&rule_name).await });
+        }
+
+        let mut saw_unavailable = false;
+
+        while let Some(result) = tasks.next().await {
+            match result {
+                Ok(content) => return Ok(content),
+                Err(AppError::RuleNotFound) => continue,
+                Err(AppError::SourceUnavailable) => saw_unavailable = true,
+                Err(AppError::InvalidRuleName) => return Err(AppError::InvalidRuleName),
+            }
+        }
+
+        if saw_unavailable {
+            Err(AppError::SourceUnavailable)
+        } else {
+            Err(AppError::RuleNotFound)
+        }
+    }
+}
+
+impl ConfiguredSource {
+    async fn fetch(&self, rule_name: &RuleName) -> Result<String, AppError> {
+        self.fetch_by_key(rule_name.as_str()).await
+    }
+
+    async fn fetch_by_key(&self, rule_key: &str) -> Result<String, AppError> {
+        if let Some(content) = self.cache.get(rule_key) {
+            return Ok(content);
+        }
+
+        let rule_name = RuleName::from_owned(rule_key.to_owned());
+
+        match self.source.fetch(&rule_name).await {
+            Ok(content) => {
+                let content = if self.remove_comments {
+                    filter_rule_lines(&content)
+                } else {
+                    content
+                };
+
+                self.cache.set(rule_key.to_owned(), content.clone());
+
+                Ok(content)
+            }
+            Err(error) => Err(error),
         }
     }
 }

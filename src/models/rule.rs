@@ -4,6 +4,10 @@ use regex::Regex;
 pub struct RuleName(String);
 
 impl RuleName {
+    pub fn from_owned(name: String) -> Self {
+        Self(name)
+    }
+
     pub fn parse(path: &str, transforms: &[RuleTransformConfig]) -> Option<Self> {
         let mut name = path.to_owned();
 

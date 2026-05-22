@@ -13,6 +13,7 @@ pub struct Config {
     server: ServerConfig,
     rule_transforms: Vec<RuleTransformConfig>,
     upstreams: Vec<UpstreamConfig>,
+    upstream_mode: UpstreamMode,
 }
 
 pub struct ServerConfig {
@@ -24,6 +25,12 @@ pub struct ServerConfig {
 pub struct RuleTransformConfig {
     pattern: String,
     replace: String,
+}
+
+#[derive(Clone, Copy)]
+pub enum UpstreamMode {
+    Race,
+    Sequential,
 }
 
 #[derive(Clone)]
@@ -49,6 +56,8 @@ struct FileConfig {
     server_ip: Option<IpAddr>,
     #[serde(rename = "server-port")]
     server_port: Option<u16>,
+    #[serde(rename = "upstream-mode")]
+    upstream_mode: Option<String>,
     #[serde(rename = "rule-transforms")]
     rule_transforms: Option<Vec<FileRuleTransformConfig>>,
     upstreams: Option<Vec<FileUpstreamConfig>>,
@@ -103,6 +112,10 @@ impl Config {
         &self.upstreams
     }
 
+    pub fn upstream_mode(&self) -> UpstreamMode {
+        self.upstream_mode
+    }
+
     fn from_path(path: &Path) -> Result<Self, String> {
         let content = fs::read_to_string(path)
             .map_err(|error| format!("failed to read config file {}: {error}", path.display()))?;
@@ -133,6 +146,11 @@ impl Config {
                 .collect();
         }
 
+        if let Some(upstream_mode) = file_config.upstream_mode {
+            config.upstream_mode = UpstreamMode::try_from(upstream_mode.as_str())
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
+
         if let Some(upstreams) = file_config.upstreams {
             config.upstreams = upstreams
                 .into_iter()
@@ -151,6 +169,7 @@ impl Default for Config {
             server: ServerConfig::default(),
             rule_transforms: Vec::new(),
             upstreams: Vec::new(),
+            upstream_mode: UpstreamMode::default(),
         }
     }
 }
@@ -171,6 +190,24 @@ impl RuleTransformConfig {
 
     pub fn replace(&self) -> &str {
         &self.replace
+    }
+}
+
+impl Default for UpstreamMode {
+    fn default() -> Self {
+        Self::Race
+    }
+}
+
+impl TryFrom<&str> for UpstreamMode {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "race" => Ok(Self::Race),
+            "sequential" => Ok(Self::Sequential),
+            other => Err(format!("unsupported upstream mode: {other}")),
+        }
     }
 }
 
