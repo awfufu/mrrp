@@ -29,6 +29,9 @@ pub enum UpstreamConfig {
     Url {
         template: String,
         remove_comments: bool,
+        proxy: Option<String>,
+        timeout_ms: Option<u64>,
+        headers: Vec<String>,
     },
     File {
         template: String,
@@ -60,6 +63,17 @@ struct FileUpstreamConfig {
     template: String,
     #[serde(rename = "remove-comments")]
     remove_comments: Option<bool>,
+    proxy: Option<String>,
+    #[serde(rename = "timeout-ms")]
+    timeout_ms: Option<u64>,
+    headers: Option<HeaderConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum HeaderConfig {
+    Single(String),
+    Multiple(Vec<String>),
 }
 
 impl Config {
@@ -163,12 +177,38 @@ impl TryFrom<FileUpstreamConfig> for UpstreamConfig {
             "url" => Ok(Self::Url {
                 template: value.template,
                 remove_comments: value.remove_comments.unwrap_or(true),
+                proxy: value.proxy,
+                timeout_ms: value.timeout_ms,
+                headers: value.headers.map(HeaderConfig::into_vec).unwrap_or_default(),
             }),
-            "file" => Ok(Self::File {
-                template: value.template,
-                remove_comments: value.remove_comments.unwrap_or(true),
-            }),
+            "file" => {
+                if value.proxy.is_some() {
+                    return Err("proxy is only supported for url upstreams".to_owned());
+                }
+
+                if value.timeout_ms.is_some() {
+                    return Err("timeout-ms is only supported for url upstreams".to_owned());
+                }
+
+                if value.headers.is_some() {
+                    return Err("headers are only supported for url upstreams".to_owned());
+                }
+
+                Ok(Self::File {
+                    template: value.template,
+                    remove_comments: value.remove_comments.unwrap_or(true),
+                })
+            }
             other => Err(format!("unsupported upstream type: {other}")),
+        }
+    }
+}
+
+impl HeaderConfig {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::Single(value) => vec![value],
+            Self::Multiple(values) => values,
         }
     }
 }
