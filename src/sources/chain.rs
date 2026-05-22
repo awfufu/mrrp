@@ -1,4 +1,5 @@
 use crate::{
+    cache::MemoryCache,
     config::{Config, UpstreamConfig},
     error::AppError,
     models::rule::RuleName,
@@ -15,6 +16,7 @@ pub struct SourceChain {
 struct ConfiguredSource {
     source: Box<dyn RuleSource>,
     remove_comments: bool,
+    cache: MemoryCache,
 }
 
 impl SourceChain {
@@ -29,6 +31,7 @@ impl SourceChain {
                     proxy,
                     timeout_ms,
                     headers,
+                    cache_ttl,
                 } => {
                     sources.push(ConfiguredSource {
                         source: Box::new(UrlSource::new(
@@ -41,15 +44,18 @@ impl SourceChain {
                             template.clone(),
                         )),
                         remove_comments: *remove_comments,
+                        cache: MemoryCache::new(*cache_ttl),
                     });
                 }
                 UpstreamConfig::File {
                     template,
                     remove_comments,
+                    cache_ttl,
                 } => {
                     sources.push(ConfiguredSource {
                         source: Box::new(FileSource::new(template.clone())),
                         remove_comments: *remove_comments,
+                        cache: MemoryCache::new(*cache_ttl),
                     });
                 }
             }
@@ -66,13 +72,21 @@ impl SourceChain {
         let mut saw_unavailable = false;
 
         for source in &self.sources {
+            if let Some(content) = source.cache.get(rule_name.as_str()) {
+                return Ok(content);
+            }
+
             match source.source.fetch(rule_name).await {
                 Ok(content) => {
-                    return Ok(if source.remove_comments {
+                    let content = if source.remove_comments {
                         filter_rule_lines(&content)
                     } else {
                         content
-                    });
+                    };
+
+                    source.cache.set(rule_name.as_str().to_owned(), content.clone());
+
+                    return Ok(content);
                 }
                 Err(AppError::RuleNotFound) => continue,
                 Err(AppError::SourceUnavailable) => saw_unavailable = true,

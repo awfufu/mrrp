@@ -8,6 +8,7 @@ rule-transforms:
 upstreams:
   - type: url
     template: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/refs/heads/master/rule/Clash/{rule}/{rule}.list"
+    # cache: 30m
     # proxy: http://127.0.0.1:7897
     # remove-comments: true
     # timeout-ms: 5000
@@ -17,4 +18,5 @@ upstreams:
 
   - type: file
     template: "./rules/{rule}.list"
+    # cache: 30m
     # remove-comments: true

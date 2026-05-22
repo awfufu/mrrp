@@ -3,9 +3,11 @@ use std::{
     env, fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 const DEFAULT_CONFIG_PATH: &str = "config.yml";
+const DEFAULT_CACHE: &str = "30m";
 
 pub struct Config {
     server: ServerConfig,
@@ -32,10 +34,12 @@ pub enum UpstreamConfig {
         proxy: Option<String>,
         timeout_ms: Option<u64>,
         headers: Vec<String>,
+        cache_ttl: Duration,
     },
     File {
         template: String,
         remove_comments: bool,
+        cache_ttl: Duration,
     },
 }
 
@@ -67,6 +71,7 @@ struct FileUpstreamConfig {
     #[serde(rename = "timeout-ms")]
     timeout_ms: Option<u64>,
     headers: Option<HeaderConfig>,
+    cache: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -180,6 +185,7 @@ impl TryFrom<FileUpstreamConfig> for UpstreamConfig {
                 proxy: value.proxy,
                 timeout_ms: value.timeout_ms,
                 headers: value.headers.map(HeaderConfig::into_vec).unwrap_or_default(),
+                cache_ttl: parse_cache_ttl(value.cache.as_deref().unwrap_or(DEFAULT_CACHE))?,
             }),
             "file" => {
                 if value.proxy.is_some() {
@@ -197,6 +203,7 @@ impl TryFrom<FileUpstreamConfig> for UpstreamConfig {
                 Ok(Self::File {
                     template: value.template,
                     remove_comments: value.remove_comments.unwrap_or(true),
+                    cache_ttl: parse_cache_ttl(value.cache.as_deref().unwrap_or(DEFAULT_CACHE))?,
                 })
             }
             other => Err(format!("unsupported upstream type: {other}")),
@@ -237,4 +244,33 @@ fn parse_config_path(args: impl Iterator<Item = String>) -> Result<Option<PathBu
     } else {
         Ok(None)
     }
+}
+
+fn parse_cache_ttl(value: &str) -> Result<Duration, String> {
+    let trimmed = value.trim();
+
+    if trimmed.is_empty() {
+        return Err("cache cannot be empty".to_owned());
+    }
+
+    let digits_len = trimmed.bytes().take_while(|byte| byte.is_ascii_digit()).count();
+
+    if digits_len == 0 {
+        return Err(format!("invalid cache duration: {value}"));
+    }
+
+    let amount = trimmed[..digits_len]
+        .parse::<u64>()
+        .map_err(|error| format!("invalid cache duration {value}: {error}"))?;
+    let unit = trimmed[digits_len..].trim();
+    let millis = match unit {
+        "" => amount,
+        "s" => amount.saturating_mul(1_000),
+        "m" => amount.saturating_mul(60_000),
+        "h" => amount.saturating_mul(3_600_000),
+        "d" => amount.saturating_mul(86_400_000),
+        _ => return Err(format!("unsupported cache duration unit in {value}")),
+    };
+
+    Ok(Duration::from_millis(millis))
 }

@@ -29,6 +29,7 @@ impl RuleSource for UrlSource {
                 Ok(response) if response.status() == StatusCode::NOT_FOUND => {
                     Err(AppError::RuleNotFound)
                 }
+                Ok(response) if response.status().is_server_error() => Err(AppError::RuleNotFound),
                 Ok(_) | Err(_) => Err(AppError::SourceUnavailable),
             }
         })
